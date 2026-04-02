@@ -1,0 +1,26 @@
+[project]
+name = "smartfridge"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "filterpy>=1.4.5",
+    "lap>=0.5.12",
+    "mediapipe>=0.10.32",
+    "numpy>=2.1.3",
+    "opencv-contrib-python>=4.10.0.84",
+    "onnxruntime-openvino>=1.24.1",
+    "pyyaml>=6.0.3",
+    "scipy>=1.17.0",
+]
+
+[tool.uv]
+# onnxruntime-openvino dan onnxruntime tidak bisa diinstall bersamaan via pip,
+# tapi conda env ini sudah handle konfliknya. Untuk uv environment baru,
+# hapus onnxruntime dari dependencies dan gunakan onnxruntime-openvino saja.
+conflicts = [
+    [
+        { package = "onnxruntime-openvino" },
+        { package = "onnxruntime" },
+        { package = "onnxruntime-gpu" },
+    ],
+]

@@ -1,0 +1,65 @@
+# ============================================================
+# SmartFridge — default configuration
+# ============================================================
+# References:
+#   model   → cfg/models/<name>.yaml
+#   tracker → cfg/trackers/<name>.yaml
+# ============================================================
+
+model: nano_v2
+tracker: hybridsort
+
+# ── Camera ───────────────────────────────────────────────────
+camera:
+  from_top: true                    # true = kamera dari atas, false = dari bawah
+
+# ── Virtual crossing lines (5 garis, urutan bawah → atas) ────
+# Setiap entry: [[x1, y1], [x2, y2]]
+lines:
+  crossings:
+    - [[2,   632], [1908, 479]]     # Line 1 (paling bawah)
+    - [[3,   544], [1915, 377]]     # Line 2
+    - [[0,   431], [1916, 257]]     # Line 3
+    - [[0,   307], [1917, 143]]     # Line 4
+    - [[2,   169], [1914,   1]]     # Line 5 (paling atas)
+  colors:                           # BGR per-line
+    - [0,   255, 255]               # Line 1 — kuning
+    - [0,   200, 255]               # Line 2 — oranye
+    - [0,   162,  46]               # Line 3 — hijau
+    - [255, 162,   0]               # Line 4 — biru
+    - [255,   0, 162]               # Line 5 — ungu
+  thickness: 3
+
+# ── Counter ──────────────────────────────────────────────────
+counter:
+  debug: false
+  debug_file: debug_counter.txt
+
+# ── Capture (pemilihan frame untuk output gambar) ────────────
+capture:
+  buffer_size: 6                    # ukuran rolling window (frame per track)
+  mode: size                        # "size" | "conf"
+
+# ── UI overlay ───────────────────────────────────────────────
+ui:
+  left_margin: 20
+  top_margin: 25
+  line_height: 40
+  box_width: 500
+  box_color: [85, 45, 255]
+  text_color: [225, 255, 255]
+  text_thickness: 2
+
+# ── Profiling ────────────────────────────────────────────────
+profiling: true                     # cetak ringkasan waktu per-stage setelah tracking
+
+# ── Output ───────────────────────────────────────────────────
+outputs:
+  dir: outputs
+  enabled: false                     # simpan gambar + cloud.csv
+
+# ── Video ────────────────────────────────────────────────────
+video:
+  source: ""                        # override saat runtime
+  save: false                        # tulis video hasil tracking
+  default_fps: 30                   # fallback jika FPS tidak terbaca dari file

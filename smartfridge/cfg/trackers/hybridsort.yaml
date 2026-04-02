@@ -1,0 +1,41 @@
+# ============================================================
+# HybridSORT tracker configuration
+# Non-tracker params (save_outputs, capture_mode) ada di default.yaml
+# ============================================================
+
+tracker_type: hybridsort
+
+# ── Detection filtering ──────────────────────────────────────
+det_thresh: 0.4          # confidence threshold untuk first-stage matching
+track_thresh: 0.4        # threshold untuk track quality estimation
+low_thresh: 0.2          # lower bound untuk second-stage (BYTE) detections
+
+# ── Track lifecycle ──────────────────────────────────────────
+max_age: 30              # max frames track hidup tanpa update
+min_hits: 1              # min deteksi berturutan sebelum track dikonfirmasi
+track_buffer: 30         # frames untuk menjaga lost tracks
+
+# ── Association ──────────────────────────────────────────────
+iou_threshold: 0.2       # IoU threshold untuk asosiasi deteksi ↔ track
+asso_func: giou          # fungsi asosiasi: iou|giou|ciou|diou|ct_dist|Height_Modulated_IoU
+inertia: 0.2             # bobot prediksi velocity [0-1]
+delta_t: 3               # jumlah frame lookback untuk estimasi velocity
+use_byte: true           # aktifkan two-stage association (ByteTrack-style)
+
+# ── Trajectory Confidence Modulation (TCM) ───────────────────
+TCM_first_step: true
+TCM_first_step_weight: 0.5
+TCM_byte_step: true
+TCM_byte_step_weight: 0.5
+
+# ── Re-identification ────────────────────────────────────────
+reid_logic: none         # none | class_reid | spatial_reid
+
+# Spatial re-ID (aktif jika reid_logic: spatial_reid)
+blink_max_frames: 45
+blink_max_dist_px: 400
+top_third_max_frames: 120
+lost_track_expire_frames: 90
+
+# ── Debug ────────────────────────────────────────────────────
+debug_track: true        # tulis info matching per-frame ke debug_track.txt

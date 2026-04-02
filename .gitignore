@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# Models (binary, large files)
+models/
+
+# Generated outputs
+outputs/
+debug.txt
+debug_track.txt
+*_tracked.mp4
+
+# Video sources
+*.mp4
+*.avi
+*.mkv
+*.mov
+
+# uv
+.uv/
+
+# Env
+.env
