@@ -25,7 +25,6 @@ class DetectionPredictor:
         tracker,
         cfg: SimpleNamespace,
     ) -> None:
-        self._tracker_args = tracker_args
         self.names = names
         self.tracker = tracker
 
@@ -61,11 +60,14 @@ class DetectionPredictor:
         self._capture_buffer_size: int = cfg.capture.buffer_size
         self.capture_mode: str = cfg.capture.mode
 
+        # Cache tracker thresholds — read every frame, avoid getattr overhead
+        self._low_thresh: float = float(getattr(tracker_args, "low_thresh", 0.2))
+        self._max_age: int      = int(getattr(tracker_args, "max_age", 30))
+
         self.tracked_products: dict[int, Product] = {}
         self.current_taken_result: list[dict] = []
 
         self._track_frame_info: dict[int, deque] = {}
-        self._rendered_window: deque = deque(maxlen=self._capture_buffer_size)
         self._orig_window: deque = deque(maxlen=self._capture_buffer_size)
         self._captures: dict[int, dict[int, tuple]] = {}
         self._last_seen_frame: dict[int, int] = {}
@@ -76,9 +78,11 @@ class DetectionPredictor:
 
     def _on_tracking_complete(self, result: SimpleResult, frame_id: int) -> None:
         self._current_orig_img = result.orig_img
-        self._orig_window.append((frame_id, result.orig_img.copy()))
+        # Copy frame only when a capture handler is configured
+        if self.on_capture is not None or self.output_saver is not None:
+            self._orig_window.append((frame_id, result.orig_img.copy()))
 
-        if not (hasattr(result, "boxes") and result.boxes.id is not None):
+        if result.boxes.id is None:
             return
 
         bbox_xyxy = result.boxes.xyxy
@@ -86,33 +90,27 @@ class DetectionPredictor:
         class_ids = result.boxes.cls.astype(int)
         confs     = result.boxes.conf
 
-        low_thresh = float(getattr(self._tracker_args, "low_thresh", 0.2))
-        max_age    = int(getattr(self._tracker_args, "max_age", 30))
-
-        valid_mask = confs >= low_thresh
+        valid_mask = confs >= self._low_thresh
         valid_ids  = track_ids[valid_mask]
 
-        for bbox, track_id, class_id in zip(bbox_xyxy, track_ids, class_ids):
+        # Single pass: upsert products + update track_frame_info
+        for i, (bbox, track_id, class_id) in enumerate(zip(bbox_xyxy, track_ids, class_ids)):
             self._upsert_product(track_id, bbox, class_id, frame_id)
+            if valid_mask[i]:
+                buf = self._track_frame_info.setdefault(
+                    track_id, deque(maxlen=self._capture_buffer_size)
+                )
+                buf.append((frame_id, bbox.tolist(), float(confs[i])))
 
         self._current_frame = frame_id
-
-        for i, track_id in enumerate(track_ids):
-            if not valid_mask[i]:
-                continue
-            buf = self._track_frame_info.setdefault(
-                track_id, deque(maxlen=self._capture_buffer_size)
-            )
-            buf.append((frame_id, bbox_xyxy[i].tolist(), float(confs[i])))
-
         self.counter.update(self.tracked_products, valid_ids, frame_id)
 
+        current_ids = set(track_ids)
         for track_id in valid_ids:
             self._last_seen_frame[track_id] = frame_id
 
-        current_ids = set(track_ids)
         for tid in list(self._last_seen_frame):
-            if tid not in current_ids and (frame_id - self._last_seen_frame[tid]) > max_age:
+            if tid not in current_ids and (frame_id - self._last_seen_frame[tid]) > self._max_age:
                 self._on_track_lost(tid)
                 self._last_seen_frame.pop(tid, None)
 
@@ -216,7 +214,6 @@ class DetectionPredictor:
         self.renderer.draw(im0, frame_id, self.counter.taken_counts, self.counter.returned_counts)
         draw_boxes(im0, self.tracked_products, track_ids)
         draw_frame_number(im0, frame_id)
-        self._rendered_window.append((frame_id, im0.copy()))
         return im0
 
     # ── Helpers ───────────────────────────────────────────────────────────────
