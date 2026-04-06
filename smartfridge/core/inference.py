@@ -58,16 +58,37 @@ class SmartFridgeModel:
         imgsz_raw = meta.get("imgsz", "[640, 640]")
         self.imgsz: int = ast.literal_eval(imgsz_raw)[0]
 
-        # Pre-alokasi buffer reusable — hindari alokasi per-frame
-        self._canvas = np.full((self.imgsz, self.imgsz, 3), 114, dtype=np.uint8)
-        self._tensor = np.empty((3, self.imgsz, self.imgsz), dtype=np.float32)
+        self._output_name: str = self.session.get_outputs()[0].name
+
+        # Buffer dan IO binding di-init saat frame pertama tiba (_init_buffers).
+        # Perlu tahu resolusi frame dulu untuk hitung inp_h × inp_w rect.
+        self._inp_h:    int | None = None
+        self._inp_w:    int | None = None
+        self._canvas:   np.ndarray | None = None
+        self._tensor:   np.ndarray | None = None
+        self._io_binding = None
 
     # ── Preprocessing ─────────────────────────────────────────────────────────
+
+    def _init_buffers(self, frame_h: int, frame_w: int) -> None:
+        """Hitung inp_h × inp_w rect dan alokasi buffer saat frame pertama tiba.
+
+        Rect-inference: pertahankan aspect ratio, pad satu sisi saja, bulatkan
+        ke kelipatan 32 (syarat stride YOLO). Lebih sedikit padding → lebih
+        sedikit piksel yang diproses model vs square 640 × 640.
+        """
+        scale        = self.imgsz / max(frame_h, frame_w)
+        self._inp_h  = int(round(frame_h * scale / 32)) * 32
+        self._inp_w  = int(round(frame_w * scale / 32)) * 32
+        self._canvas = np.full((self._inp_h, self._inp_w, 3), 114, dtype=np.uint8)
+        self._tensor = np.empty((3, self._inp_h, self._inp_w), dtype=np.float32)
+        self._io_binding = self.session.io_binding()
+        print(f"[inference] input {frame_w}×{frame_h}  →  tensor {self._inp_w}×{self._inp_h}")
 
     def _letterbox(
         self, img: np.ndarray
     ) -> tuple[np.ndarray, float, int, int]:
-        """Resize gambar dengan letterbox padding ke imgsz x imgsz.
+        """Resize gambar dengan letterbox padding ke inp_h × inp_w.
 
         Menulis ke buffer pre-alokasi untuk menghindari alokasi per-frame.
 
@@ -78,23 +99,17 @@ class SmartFridgeModel:
             pad_top  : padding vertikal dalam piksel
         """
         h, w = img.shape[:2]
-        r = min(self.imgsz / h, self.imgsz / w)
-        new_w = int(round(w * r))
-        new_h = int(round(h * r))
-        pad_left = int(round((self.imgsz - new_w) / 2 - 0.1))
-        pad_top  = int(round((self.imgsz - new_h) / 2 - 0.1))
+        r        = min(self._inp_h / h, self._inp_w / w)
+        new_w    = int(round(w * r))
+        new_h    = int(round(h * r))
+        pad_left = int(round((self._inp_w - new_w) / 2 - 0.1))
+        pad_top  = int(round((self._inp_h - new_h) / 2 - 0.1))
 
-        # Reset padding area dan tulis hasil resize ke canvas yang sama
         self._canvas[:] = 114
-        self._canvas[pad_top:pad_top + new_h, pad_left:pad_left + new_w] = (
-            cv2.resize(img, (new_w, new_h))
-        )
-        # HWC BGR → CHW RGB, tulis langsung ke _tensor (tanpa alokasi baru)
-        np.divide(
-            self._canvas[:, :, ::-1].transpose(2, 0, 1),
-            255.0,
-            out=self._tensor,
-        )
+        cv2.resize(img, (new_w, new_h),
+                   dst=self._canvas[pad_top:pad_top + new_h, pad_left:pad_left + new_w])
+        rgb = cv2.cvtColor(self._canvas, cv2.COLOR_BGR2RGB)
+        np.divide(rgb.transpose(2, 0, 1), 255.0, out=self._tensor)
         return self._tensor, r, pad_left, pad_top
 
     # ── Inference ─────────────────────────────────────────────────────────────
@@ -117,12 +132,19 @@ class SmartFridgeModel:
         """
         orig_h, orig_w = img.shape[:2]
 
+        if self._inp_h is None:
+            self._init_buffers(orig_h, orig_w)
+
         with measure_or_null(profiler, "preprocess"):
             tensor, r, pad_left, pad_top = self._letterbox(img)
 
         with measure_or_null(profiler, "infer"):
-            # raw shape: (N_max, 6) — [x1, y1, x2, y2, conf, cls] dalam letterbox coords
-            raw = self.session.run(None, {self.input_name: tensor[None]})[0][0]
+            # IO binding: zero-copy input, output tanpa alokasi baru per-frame
+            self._io_binding.bind_cpu_input(self.input_name, tensor[None])
+            self._io_binding.bind_output(self._output_name)
+            self.session.run_with_iobinding(self._io_binding)
+            # .numpy() mengembalikan view ke buffer ORT — tidak ada copy
+            raw = self._io_binding.get_outputs()[0].numpy()[0]
 
         with measure_or_null(profiler, "postprocess"):
             mask = raw[:, 4] >= conf_thresh
@@ -135,15 +157,14 @@ class SmartFridgeModel:
                     cls= np.empty((0,),   dtype=np.float32),
                 )
 
-            # Scale-back dari letterbox ke koordinat asli
-            boxes = dets[:, :4].copy()
-            boxes[:, [0, 2]] = (boxes[:, [0, 2]] - pad_left) / r
-            boxes[:, [1, 3]] = (boxes[:, [1, 3]] - pad_top)  / r
-            boxes[:, [0, 2]] = boxes[:, [0, 2]].clip(0, orig_w)
-            boxes[:, [1, 3]] = boxes[:, [1, 3]].clip(0, orig_h)
+            # Scale-back dari letterbox ke koordinat asli — satu operasi broadcast
+            inv_r  = np.float32(1.0 / r)
+            offset = np.array([pad_left, pad_top, pad_left, pad_top], dtype=np.float32)
+            clamp  = np.array([orig_w,   orig_h,  orig_w,   orig_h],  dtype=np.float32)
+            boxes  = np.clip((dets[:, :4] - offset) * inv_r, 0.0, clamp)
 
             result = SimpleDetections(
-                xyxy=boxes.astype(np.float32),
+                xyxy=boxes,
                 conf=dets[:, 4].astype(np.float32),
                 cls= dets[:, 5].astype(np.float32),
             )

@@ -52,6 +52,12 @@ class DetectionPredictor:
             else None
         )
 
+        # Override this to replace the default file-save behaviour, e.g. cloud upload.
+        # Signature: on_capture(cross_frame, best_frame, orig_img, track_id,
+        #                       class_name, bbox, line_name, direction)
+        # When set, output_saver is NOT called even if outputs.enabled is True.
+        self.on_capture = None
+
         self._capture_buffer_size: int = cfg.capture.buffer_size
         self.capture_mode: str = cfg.capture.mode
 
@@ -60,13 +66,18 @@ class DetectionPredictor:
 
         self._track_frame_info: dict[int, deque] = {}
         self._rendered_window: deque = deque(maxlen=self._capture_buffer_size)
+        self._orig_window: deque = deque(maxlen=self._capture_buffer_size)
         self._captures: dict[int, dict[int, tuple]] = {}
         self._last_seen_frame: dict[int, int] = {}
         self._current_frame: int = 0
+        self._current_orig_img: np.ndarray | None = None
 
     # ── Tracking logic ────────────────────────────────────────────────────────
 
     def _on_tracking_complete(self, result: SimpleResult, frame_id: int) -> None:
+        self._current_orig_img = result.orig_img
+        self._orig_window.append((frame_id, result.orig_img.copy()))
+
         if not (hasattr(result, "boxes") and result.boxes.id is not None):
             return
 
@@ -125,54 +136,74 @@ class DetectionPredictor:
 
         best_frame_id, bbox, _ = best
 
-        rendered = None
-        for fid, img in self._rendered_window:
+        # Always use the clean original frame (no overlays) for both full_image
+        # and product crop. _orig_window is populated at the start of
+        # _on_tracking_complete, so best_frame_id is guaranteed to be present
+        # (it was just appended for the current frame, or is in the window for
+        # recent past frames).
+        orig = None
+        for fid, img in self._orig_window:
             if fid == best_frame_id:
-                rendered = img
+                orig = img
                 break
-        if rendered is None and self._rendered_window:
-            _, rendered = self._rendered_window[-1]
+        if orig is None:
+            orig = self._current_orig_img  # current frame fallback
 
         self._captures.setdefault(track_id, {})[line_idx] = (
-            frame, best_frame_id, rendered, bbox
+            frame, best_frame_id, orig, bbox
         )
 
     def _on_track_lost(self, track_id: int) -> None:
         product = self.tracked_products.get(track_id)
         event   = self.counter.finalize(track_id)
 
-        if event and self.output_saver:
-            class_name = product.class_name if product else "unknown"
-            direction  = event["direction"]
+        captures = self._captures.pop(track_id, {})
 
-            if direction == "taken":
-                self.counter.taken_counts[class_name] = (
-                    self.counter.taken_counts.get(class_name, 0) + 1
-                )
-                if product:
-                    product.mark_taken()
-            else:
-                self.counter.returned_counts[class_name] = (
-                    self.counter.returned_counts.get(class_name, 0) + 1
-                )
-                if product:
-                    product.mark_returned()
+        if not event:
+            return
 
-            captures = self._captures.pop(track_id, {})
-            for line_idx, (cross_frame, best_frame, rendered, bbox) in sorted(captures.items()):
-                if rendered is not None:
-                    self.output_saver.save(
-                        cross_frame=cross_frame,
-                        best_frame=best_frame,
-                        rendered_frame=rendered,
-                        track_id=track_id,
-                        class_name=class_name,
-                        bbox=bbox,
-                        line_idx=line_idx,
-                        direction=direction,
-                    )
+        class_name = product.class_name if product else "unknown"
+        direction  = event["direction"]
+
+        if direction == "taken":
+            self.counter.taken_counts[class_name] = (
+                self.counter.taken_counts.get(class_name, 0) + 1
+            )
+            if product:
+                product.mark_taken()
         else:
-            self._captures.pop(track_id, None)
+            self.counter.returned_counts[class_name] = (
+                self.counter.returned_counts.get(class_name, 0) + 1
+            )
+            if product:
+                product.mark_returned()
+
+        for line_idx, (cross_frame, best_frame, orig_img, bbox) in sorted(captures.items()):
+            if orig_img is None:
+                continue
+            line_name = f"L{line_idx + 1}"
+            if self.on_capture is not None:
+                self.on_capture(
+                    cross_frame=cross_frame,
+                    best_frame=best_frame,
+                    orig_img=orig_img,
+                    track_id=track_id,
+                    class_name=class_name,
+                    bbox=bbox,
+                    line_name=line_name,
+                    direction=direction,
+                )
+            elif self.output_saver is not None:
+                self.output_saver.save(
+                    cross_frame=cross_frame,
+                    best_frame=best_frame,
+                    rendered_frame=orig_img,
+                    track_id=track_id,
+                    class_name=class_name,
+                    bbox=bbox,
+                    line_idx=line_idx,
+                    direction=direction,
+                )
 
         self._track_frame_info.pop(track_id, None)
         self.tracked_products.pop(track_id, None)
@@ -185,7 +216,7 @@ class DetectionPredictor:
         self.renderer.draw(im0, frame_id, self.counter.taken_counts, self.counter.returned_counts)
         draw_boxes(im0, self.tracked_products, track_ids)
         draw_frame_number(im0, frame_id)
-        self._rendered_window.append((self._current_frame, im0.copy()))
+        self._rendered_window.append((frame_id, im0.copy()))
         return im0
 
     # ── Helpers ───────────────────────────────────────────────────────────────

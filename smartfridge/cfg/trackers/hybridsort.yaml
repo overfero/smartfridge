@@ -17,7 +17,7 @@ track_buffer: 30         # frames untuk menjaga lost tracks
 
 # ── Association ──────────────────────────────────────────────
 iou_threshold: 0.2       # IoU threshold untuk asosiasi deteksi ↔ track
-asso_func: giou          # fungsi asosiasi: iou|giou|ciou|diou|ct_dist|Height_Modulated_IoU
+asso_func: iou          # fungsi asosiasi: iou|giou|ciou|diou|ct_dist|Height_Modulated_IoU
 inertia: 0.2             # bobot prediksi velocity [0-1]
 delta_t: 3               # jumlah frame lookback untuk estimasi velocity
 use_byte: true           # aktifkan two-stage association (ByteTrack-style)

@@ -66,15 +66,20 @@ class SmartFridgeYOLO:
         save: bool | None = None,
         verbose: bool = False,
         profiling: bool = False,
+        on_capture=None,
         **_kwargs,  # terima kwargs lama (half, device, persist, …) tanpa error
     ):
         """Generator: yield SimpleResult satu per frame.
 
         Args:
-            source   : Path ke video. Default: cfg.video.source.
-            save     : Override cfg.video.save jika diberikan.
-            verbose  : Tidak dipakai (kompatibilitas).
-            profiling: Jika True, cetak ringkasan waktu per-stage setelah selesai.
+            source     : Path ke video. Default: cfg.video.source.
+            save       : Override cfg.video.save jika diberikan.
+            verbose    : Tidak dipakai (kompatibilitas).
+            profiling  : Jika True, cetak ringkasan waktu per-stage setelah selesai.
+            on_capture : Callback dipanggil setiap crossing event.
+                         Signature: fn(cross_frame, best_frame, orig_img, track_id,
+                                       class_name, bbox, line_name, direction)
+                         Jika di-set, menggantikan output_saver.
         """
         video_source = source or self.cfg.video.source
         do_save      = save if save is not None else self.cfg.video.save
@@ -89,6 +94,8 @@ class SmartFridgeYOLO:
             tracker=tracker,
             cfg=self.cfg,
         )
+        if on_capture is not None:
+            predictor.on_capture = on_capture
 
         cap = cv2.VideoCapture(video_source)
         fps = cap.get(cv2.CAP_PROP_FPS) or float(self.cfg.video.default_fps)
@@ -102,8 +109,8 @@ class SmartFridgeYOLO:
                 out_path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w, h)
             )
 
-        # Render hanya kalau dibutuhkan: video output atau capture images
-        needs_render = do_save or self.cfg.outputs.enabled
+        # Render hanya kalau dibutuhkan untuk video output
+        needs_render = do_save
 
         prof    = Profiler() if profiling else None
         _m      = lambda s: measure_or_null(prof, s)  # noqa: E731
