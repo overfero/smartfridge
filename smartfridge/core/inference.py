@@ -27,11 +27,15 @@ from smartfridge.core.types import SimpleDetections
 class SmartFridgeModel:
     """Wrapper ONNX Runtime untuk model YOLO11 end2end."""
 
-    def __init__(self, model_path: str) -> None:
+    def __init__(self, model_path: str, num_threads: int | None = None) -> None:
         available = ort.get_available_providers()
         if "OpenVINOExecutionProvider" in available:
-            # Biarkan OpenVINO manage threading-nya sendiri — jangan override
-            providers = ["OpenVINOExecutionProvider", "CPUExecutionProvider"]
+            # Batasi thread OpenVINO sesuai core yang di-pin — tanpa ini OV spawn
+            # thread sebanyak total CPU logical core meski process sudah di-pin,
+            # menyebabkan kontestasi dan FPS tidak stabil.
+            n_threads = num_threads or len(os.sched_getaffinity(0))
+            ov_options = {"num_of_threads": str(n_threads)}
+            providers = [("OpenVINOExecutionProvider", ov_options), "CPUExecutionProvider"]
             self.session = ort.InferenceSession(model_path, providers=providers)
         else:
             opts = ort.SessionOptions()

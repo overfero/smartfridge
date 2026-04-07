@@ -34,8 +34,8 @@ from smartfridge.frame_processor import DetectionPredictor
 from smartfridge.trackers.hybrid_sort_tracker import HybridSORT
 
 # ── Sumber video ───────────────────────────────────────────────────────────────
-SOURCE_TOP    = "/home/overfero/Project/glair/Jumpstart - Smart Fridge/Ambil Biasa - Atas/WIN_20260126_10_28_41_Pro.mp4"
-SOURCE_BOTTOM = SOURCE_TOP   # produksi: ganti ke kamera bawah
+SOURCE_TOP    = "smart_fridge_atas.mp4"
+SOURCE_BOTTOM = "smart_fridge_bawah.mp4"   # produksi: ganti ke kamera bawah
 
 # ── CPU affinity per process ───────────────────────────────────────────────────
 # Ubah sesuai kebutuhan. Pastikan kedua set tidak overlap.
@@ -62,9 +62,9 @@ def _tracker_args(cfg: SimpleNamespace) -> SimpleNamespace:
 class CameraPipeline:
     """Satu kamera: model ONNX + tracker + predictor + capture."""
 
-    def __init__(self, name: str, source: str, cfg: SimpleNamespace) -> None:
+    def __init__(self, name: str, source: str, cfg: SimpleNamespace, cores: list[int] | None = None) -> None:
         self.name = name
-        self.model = SmartFridgeModel(cfg.model.path)
+        self.model = SmartFridgeModel(cfg.model.path, num_threads=len(cores) if cores else None)
 
         tracker_args = _tracker_args(cfg)
         self.tracker = HybridSORT(tracker_args, frame_rate=cfg.video.default_fps)
@@ -118,7 +118,7 @@ def _camera_worker(
         os.sched_setaffinity(0, set(cores))
 
     cfg = load_config()
-    cam = CameraPipeline(name, source, cfg)
+    cam = CameraPipeline(name, source, cfg, cores=cores)
 
     frame_id = 0
     t_start  = time.perf_counter()
